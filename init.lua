@@ -1,6 +1,6 @@
 pfQuestLedger = CreateFrame("Frame", "pfQuestLedgerEventFrame", UIParent)
 
-pfQuestLedger.version = "0.3.0"
+pfQuestLedger.version = "0.3.1"
 pfQuestLedger.savedVariablesVersion = 2
 pfQuestLedger.guildTargetedRequestCooldown = 15
 pfQuestLedger.guildRefreshButtonTexture = "Interface\\AddOns\\pfQuestLedger\\assets\\guild_refresh.tga"
@@ -17,6 +17,8 @@ pfQuestLedger.guildAutoReplyCooldown = 10 * 60
 pfQuestLedger.guildAutoReplyJitter = 10
 pfQuestLedger.guildAutoDirtyDebounce = 60
 pfQuestLedger.guildAutoRequestMaxPerHour = 2
+pfQuestLedger.questUpdateUIRefreshDebounce = 0.20
+pfQuestLedger.questUpdateGuildDirtyDebounce = 0.75
 pfQuestLedger.guildProtocolVersion = 2
 pfQuestLedger.guildDebugLogLimit = 100
 pfQuestLedger.guildRosterPruneInterval = 24 * 60 * 60
@@ -245,6 +247,8 @@ function pfQuestLedger:ResetGuildSyncState()
   character.lastGuildReplyByTarget = {}
   character.autoRequestHistory = {}
   character.lastTargetedGuildRequestAt = {}
+  self.pendingGuildStateDirtyAt = nil
+  self.pendingQuestUIRefreshAt = nil
   self:ClearDebugLog()
   self:EnsureAutoGuildSchedule(true)
   self:AddDebugEvent("sync", "Guild sync state was reset.")
@@ -5671,6 +5675,42 @@ function pfQuestLedger:RefreshRuntimeCaches()
   self:ResolveAttunementSteps()
 end
 
+function pfQuestLedger:GetMonotonicTime()
+  if GetTime then
+    return GetTime()
+  end
+
+  return tonumber(time()) or 0
+end
+
+function pfQuestLedger:ScheduleQuestProgressWork(refreshUI)
+  local now = self:GetMonotonicTime()
+  local uiDueAt = now + (self.questUpdateUIRefreshDebounce or 0.20)
+  local dirtyDueAt = now + (self.questUpdateGuildDirtyDebounce or 0.75)
+
+  self.pendingGuildStateDirtyAt = dirtyDueAt
+
+  if refreshUI and self.frame and self.frame:IsShown() then
+    self.pendingQuestUIRefreshAt = uiDueAt
+  end
+end
+
+function pfQuestLedger:ProcessPendingDeferredWork(now)
+  now = tonumber(now) or self:GetMonotonicTime()
+
+  if self.pendingGuildStateDirtyAt and now >= self.pendingGuildStateDirtyAt then
+    self.pendingGuildStateDirtyAt = nil
+    self:MarkGuildStateDirty()
+  end
+
+  if self.pendingQuestUIRefreshAt and now >= self.pendingQuestUIRefreshAt then
+    self.pendingQuestUIRefreshAt = nil
+    if self.frame and self.frame:IsShown() then
+      self:Refresh()
+    end
+  end
+end
+
 function pfQuestLedger:CreateButton(parent, width, height, text)
   local button = CreateFrame("Button", nil, parent, "UIPanelButtonTemplate")
   button:SetWidth(width)
@@ -6701,20 +6741,12 @@ pfQuestLedger:SetScript("OnEvent", function()
     pfQuestLedger:MarkGuildStateDirty()
   elseif event == "QUEST_LOG_UPDATE" or event == "QUEST_QUERY_COMPLETE" then
     pfQuestLedger:InitializeRuntime()
-    pfQuestLedger:RefreshRuntimeCaches()
-    if pfQuestLedger.frame and pfQuestLedger.frame:IsShown() then
-      pfQuestLedger:Refresh()
-    end
-    pfQuestLedger:MarkGuildStateDirty()
+    pfQuestLedger:ScheduleQuestProgressWork(true)
     pfQuestLedger:ProcessAutoGuildTraffic()
   elseif event == "PLAYER_LEVEL_UP" or event == "UPDATE_FACTION" then
     pfQuestLedger:InitializeRuntime()
-    pfQuestLedger:RefreshRuntimeCaches()
-    pfQuestLedger:MarkGuildStateDirty()
+    pfQuestLedger:ScheduleQuestProgressWork(true)
     pfQuestLedger:ProcessAutoGuildTraffic()
-    if pfQuestLedger.frame and pfQuestLedger.frame:IsShown() then
-      pfQuestLedger:Refresh()
-    end
   elseif event == "PLAYER_REGEN_ENABLED" or event == "ZONE_CHANGED_NEW_AREA" then
     pfQuestLedger:ProcessAutoGuildTraffic()
   elseif event == "PLAYER_REGEN_DISABLED" then
@@ -6733,6 +6765,9 @@ end)
 
 pfQuestLedger:SetScript("OnUpdate", function()
   this.autoGuildTickElapsed = (this.autoGuildTickElapsed or 0) + (arg1 or 0)
+  if pfQuestLedger then
+    pfQuestLedger:ProcessPendingDeferredWork()
+  end
   if this.autoGuildTickElapsed < 1 then return end
   this.autoGuildTickElapsed = 0
   if pfQuestLedger then

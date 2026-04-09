@@ -2,7 +2,7 @@
 ## Title: pfQuestLedger
 ## Notes: Quest registry, attunement tracker, and guild sync for pfQuest.
 ## Author: Ravenhost
-## Version: 0.3.0
+## Version: 0.3.1
 ## Dependencies: pfQuest
 ## SavedVariablesPerCharacter: pfQuestLedgerDB
 
