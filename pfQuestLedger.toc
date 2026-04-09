@@ -1,0 +1,10 @@
+## Interface: 11200
+## Title: pfQuestLedger
+## Notes: Quest registry, attunement tracker, and guild sync for pfQuest.
+## Author: Ravenhost
+## Version: 0.3.0
+## Dependencies: pfQuest
+## SavedVariablesPerCharacter: pfQuestLedgerDB
+
+data\attunements.lua
+init.lua
