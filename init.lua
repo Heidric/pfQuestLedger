@@ -2773,8 +2773,9 @@ function pfQuestLedger:SendGuildState(target, payload, sourceType)
     if string.len(self.prefix) + string.len(payload) > 254 then
       return false
     end
-    SendAddonMessage(self.prefix, payload, "WHISPER", target)
-    self:AddDebugEvent("sync", "Whispered guild state to " .. tostring(target) .. ".")
+
+    SendAddonMessage(self.prefix, payload, "GUILD")
+    self:AddDebugEvent("sync", "Broadcasted targeted guild state for " .. tostring(target) .. " to GUILD.")
     return true
   end
 
@@ -4181,6 +4182,7 @@ end
 
 function pfQuestLedger:RequestGuildStateFrom(target)
   local payload, canSend, waitSeconds
+  local requester = UnitName("player") or "?"
 
   if not GetGuildInfo("player") then
     self:Print("Guild sync is unavailable because you are not in a guild.")
@@ -4193,14 +4195,14 @@ function pfQuestLedger:RequestGuildStateFrom(target)
     return false
   end
 
-  payload = "REQ" .. (self.msgSep or "~") .. (UnitName("player") or "?")
+  payload = "REQONE" .. (self.msgSep or "~") .. requester .. (self.msgSep or "~") .. tostring(target or "")
   if string.len(self.prefix) + string.len(payload) > 254 then
     return false
   end
 
-  SendAddonMessage(self.prefix, payload, "WHISPER", target)
+  SendAddonMessage(self.prefix, payload, "GUILD")
   pfQuestLedgerDB.character.lastTargetedGuildRequestAt[target] = time()
-  self:AddDebugEvent("sync", "Sent targeted guild state request to " .. tostring(target) .. ".")
+  self:AddDebugEvent("sync", "Sent targeted guild state request for " .. tostring(target) .. " via GUILD.")
   return true
 end
 
@@ -4315,6 +4317,18 @@ function pfQuestLedger:HandleAddonMessage(message, sender, distribution)
     return
   end
 
+  if parts[1] == "REQONE" then
+    local requester = parts[2] or sender
+    local target = parts[3]
+    local playerName = UnitName("player") or ""
+
+    if requester and requester ~= "" and target and target ~= "" and target == playerName then
+      self:AddDebugEvent("sync", "Received REQONE for " .. tostring(target) .. " from " .. tostring(sender or requester) .. ".")
+      self:QueueGuildStateReply(requester)
+    end
+    return
+  end
+
   if parts[1] ~= "STATE" or table.getn(parts) < 5 then
     return
   end
@@ -4325,7 +4339,7 @@ function pfQuestLedger:HandleAddonMessage(message, sender, distribution)
     faction = parts[5],
     protocolVersion = 1,
     addonVersion = "",
-    sourceType = distribution == "WHISPER" and "reply" or "manual",
+    sourceType = "manual",
     attunements = {},
     reputations = {},
     updatedAt = time(),
@@ -6394,12 +6408,11 @@ function pfQuestLedger:CreateUI()
     guildRefresh:SetPoint("RIGHT", guildRow, "RIGHT", -42, 0)
     guildRefresh:SetText("")
     guildRefresh:SetScript("OnEnter", function()
-      local remaining = 0
       pfQuestLedger:SetGuildRowHovered(this:GetParent(), true)
       GameTooltip:SetOwner(this, "ANCHOR_RIGHT")
       GameTooltip:SetText("Request fresh data", 1, 0.82, 0)
       GameTooltip:AddLine(this.memberName or "Unknown", 0.75, 0.75, 0.75)
-      GameTooltip:AddLine("This sends a direct addon request to that character.", 0.80, 0.80, 0.80, 1)
+      GameTooltip:AddLine("This asks that character to rebroadcast their state to guild.", 0.80, 0.80, 0.80, 1)
       GameTooltip:AddLine("The target must be online to answer.", 0.80, 0.80, 0.80, 1)
       local canSend, waitSeconds = pfQuestLedger:CanTargetedRequestGuildState(this.memberName)
       if not canSend and (waitSeconds or 0) > 0 then
