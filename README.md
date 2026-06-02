@@ -1,8 +1,9 @@
-pfQuestLedger 0.3.0
+pfQuestLedger 0.4.0
 
 What it does
 - Quest registry on top of pfQuest.
 - Chain tab using the same curated data in a chain-oriented view.
+- Instances quest browser tab.
 - Quest completion sync button that calls pfQuest's QueryServer flow.
 - Attunement tab with curated raid attunements.
 

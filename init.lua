@@ -1,6 +1,6 @@
 pfQuestLedger = CreateFrame("Frame", "pfQuestLedgerEventFrame", UIParent)
 
-pfQuestLedger.version = "0.3.1"
+pfQuestLedger.version = "0.4.0"
 pfQuestLedger.savedVariablesVersion = 2
 pfQuestLedger.guildTargetedRequestCooldown = 15
 pfQuestLedger.guildRefreshButtonTexture = "Interface\\AddOns\\pfQuestLedger\\assets\\guild_refresh.tga"
@@ -25,10 +25,11 @@ pfQuestLedger.guildRosterPruneInterval = 24 * 60 * 60
 pfQuestLedger.msgSep = "~"
 pfQuestLedger.appName = "pfQuestLedger"
 pfQuestLedger.prefix = "PFLDG"
-pfQuestLedger.tabOrder = { "QUESTS", "CHAINS", "ATTUNEMENTS", "GUILD" }
+pfQuestLedger.tabOrder = { "QUESTS", "CHAINS", "INSTANCES", "ATTUNEMENTS", "GUILD" }
 pfQuestLedger.tabLabels = {
   QUESTS = "Quests",
   CHAINS = "Chains",
+  INSTANCES = "Instances",
   ATTUNEMENTS = "Attunements",
   GUILD = "Guild",
 }
@@ -104,6 +105,8 @@ pfQuestLedger.filterMenuTitles = {
 }
 pfQuestLedger.listPageSize = 14
 pfQuestLedger.attunements = pfQuestLedger_Attunements or {}
+pfQuestLedger.instances = pfQuestLedger_Instances or {}
+pfQuestLedger.instanceQuestById = {}
 pfQuestLedger.titleMap = {}
 pfQuestLedger.normalizedTitleMap = {}
 pfQuestLedger.questIndex = {}
@@ -113,10 +116,11 @@ pfQuestLedger.questLocale = {}
 pfQuestLedger.questParents = {}
 pfQuestLedger.questChildren = {}
 pfQuestLedger.chains = {}
+pfQuestLedger.instanceIndex = {}
 pfQuestLedger.attByQuestId = {}
 pfQuestLedger.questStarterCache = {}
 pfQuestLedger.currentList = {}
-pfQuestLedger.selection = { QUESTS = nil, CHAINS = nil, ATTUNEMENTS = nil, GUILD = nil }
+pfQuestLedger.selection = { QUESTS = nil, CHAINS = nil, INSTANCES = nil, ATTUNEMENTS = nil, GUILD = nil }
 
 local bitband = bit and bit.band
 
@@ -614,6 +618,7 @@ function pfQuestLedger:EnsureDB()
   end
   profile.searchByTab.QUESTS = profile.searchByTab.QUESTS or ""
   profile.searchByTab.CHAINS = profile.searchByTab.CHAINS or ""
+  profile.searchByTab.INSTANCES = profile.searchByTab.INSTANCES or ""
   profile.searchByTab.ATTUNEMENTS = profile.searchByTab.ATTUNEMENTS or ""
   profile.searchByTab.GUILD = profile.searchByTab.GUILD or ""
   profile.search = profile.searchByTab[profile.activeTab] or ""
@@ -625,6 +630,7 @@ function pfQuestLedger:EnsureDB()
   profile.page = profile.page or {}
   profile.page.QUESTS = profile.page.QUESTS or 1
   profile.page.CHAINS = profile.page.CHAINS or 1
+  profile.page.INSTANCES = profile.page.INSTANCES or 1
   profile.page.ATTUNEMENTS = profile.page.ATTUNEMENTS or 1
   profile.page.GUILD = profile.page.GUILD or 1
   profile.manualStepInput = profile.manualStepInput or "1"
@@ -1793,7 +1799,11 @@ function pfQuestLedger:IsQuestPvP(id)
 end
 
 function pfQuestLedger:IsQuestDungeon(id)
-  local data = self.questData[id] or {}
+  local questId = tonumber(id)
+  local data = self.questData[id] or self.questData[questId] or {}
+  if questId and pfQuestLedger_DungeonQuests and pfQuestLedger_DungeonQuests[questId] then
+    return true
+  end
   if data.dungeon or data.instance then
     return true
   end
@@ -2077,6 +2087,34 @@ function pfQuestLedger:GetVisibleChainList()
       return a.name < b.name
     end
     return a.id < b.id
+  end)
+  return results
+end
+
+function pfQuestLedger:GetVisibleInstanceList()
+  local results = {}
+  local search = self:GetSearchText("INSTANCES")
+  local i, inst, text, questIndex, quest
+
+  for i = 1, table.getn(self.instances or {}) do
+    inst = self.instances[i]
+    text = (inst.name or "") .. " " .. (inst.levelText or "") .. " " .. (inst.category or "")
+    for questIndex = 1, table.getn(inst.quests or {}) do
+      quest = inst.quests[questIndex]
+      text = text .. " " .. (quest.title or "")
+    end
+    if self:Contains(text, search) then
+      table.insert(results, inst)
+    end
+  end
+
+  table.sort(results, function(a, b)
+    local aorder = tonumber(a.order) or tonumber(a.level) or 0
+    local border = tonumber(b.order) or tonumber(b.level) or 0
+    if aorder ~= border then
+      return aorder < border
+    end
+    return (a.name or "") < (b.name or "")
   end)
   return results
 end
@@ -4456,6 +4494,9 @@ function pfQuestLedger:SelectListItem(index)
     self.selection[tab] = object.name
   else
     self.selection[tab] = object._listKey
+    if tab == "INSTANCES" then
+      pfQuestLedgerDB.profile.page.INSTANCES = pfQuestLedgerDB.profile.page.INSTANCES or 1
+    end
   end
   self:RefreshDetails()
   self:RefreshListButtons()
@@ -4479,6 +4520,125 @@ function pfQuestLedger:FindChainByListKey(listKey)
     end
   end
   return nil
+end
+
+function pfQuestLedger:FindInstanceByListKey(listKey)
+  local i
+  for i = 1, table.getn(self.instances or {}) do
+    if self.instances[i]._listKey == listKey then
+      return self.instances[i]
+    end
+  end
+  return nil
+end
+
+function pfQuestLedger:GetInstanceQuestTitle(quest)
+  local qid = quest and tonumber(quest.questId) or nil
+  if qid and self.questLocale[qid] and self.questLocale[qid].T and self.questLocale[qid].T ~= "" then
+    return self.questLocale[qid].T
+  end
+  if quest and quest.title and quest.title ~= "" then
+    return quest.title
+  end
+  if qid then
+    return "Quest " .. qid
+  end
+  return "Unknown quest"
+end
+
+function pfQuestLedger:BuildInstanceCaches()
+  self.instances = pfQuestLedger_Instances or self.instances or {}
+  self.instanceQuestById = {}
+  self.instanceIndex = {}
+
+  local instIndex, questIndex, inst, quest, qid, step, level, source
+  for instIndex = 1, table.getn(self.instances) do
+    inst = self.instances[instIndex]
+    inst._index = instIndex
+    inst._listKey = "INSTANCE:" .. tostring(inst.id or instIndex)
+    inst.category = inst.isRaid and "Raid" or "Dungeon"
+    inst.group = "Instances"
+    inst.side = "Both"
+    inst.level = tonumber(inst.level) or 0
+    inst.steps = {}
+    inst.questCount = 0
+    self.instanceIndex[inst._listKey] = inst
+
+    local seen = {}
+    for questIndex = 1, table.getn(inst.quests or {}) do
+      quest = inst.quests[questIndex]
+      qid = quest and tonumber(quest.questId) or nil
+      if qid and not seen[qid] then
+        seen[qid] = true
+        level = tonumber(quest.level) or self:GetQuestDisplayLevel(qid)
+        source = quest.source or inst.name
+        step = {
+          kind = "quest",
+          questId = qid,
+          resolvedQuestId = qid,
+          title = self:GetInstanceQuestTitle(quest),
+          subtitle = (quest.side and quest.side ~= "Both") and quest.side or (inst.isRaid and "Raid quest" or "Dungeon quest"),
+          locationSuffix = inst.name,
+          note = (inst.name or "Instance") .. " - " .. (source or "") .. " - level " .. tostring(level or 0),
+          level = level,
+          side = quest.side or "Both",
+        }
+        table.insert(inst.steps, step)
+        inst.questCount = inst.questCount + 1
+        self.instanceQuestById[qid] = self.instanceQuestById[qid] or {}
+        table.insert(self.instanceQuestById[qid], inst._listKey)
+      end
+    end
+
+    table.sort(inst.steps, function(a, b)
+      return pfQuestLedger:CompareQuestIds(a.questId or 0, b.questId or 0)
+    end)
+    inst.summary = tostring(inst.questCount or table.getn(inst.steps or {})) .. " quests."
+  end
+end
+
+function pfQuestLedger:GetVisibleInstanceSteps(inst)
+  local visible = {}
+  local i, step, qid
+  if not inst or not inst.steps then
+    return visible
+  end
+
+  for i = 1, table.getn(inst.steps) do
+    step = inst.steps[i]
+    qid = step.questId or step.resolvedQuestId
+    if qid and self.questRecordById[qid] and self:IsQuestForPlayer(qid) then
+      table.insert(visible, step)
+    end
+  end
+
+  return visible
+end
+
+function pfQuestLedger:GetInstanceStepOwner(inst)
+  if not inst then
+    return nil
+  end
+
+  return {
+    id = inst.id,
+    _listKey = inst._listKey,
+    name = inst.name,
+    category = inst.category or (inst.isRaid and "Raid" or "Dungeon"),
+    group = inst.group or "Instances",
+    side = "Both",
+    level = inst.level or 0,
+    summary = inst.summary or "",
+    steps = self:GetVisibleInstanceSteps(inst),
+  }
+end
+
+function pfQuestLedger:GetInstanceProgress(inst)
+  local owner = self:GetInstanceStepOwner(inst)
+  if not owner then
+    return 0, 0, "Pending", 0, 0
+  end
+  return self:GetAttunementProgress(owner)
 end
 
 function pfQuestLedger:HideDetailLinks()
@@ -4778,6 +4938,18 @@ function pfQuestLedger:RenderQuestDetails(id)
     end
   end
 
+  if self.instanceQuestById and self.instanceQuestById[id] then
+    self:AddDetailLine(" ")
+    self:AddDetailLine("Instances:", 1, 0.82, 0.2)
+    local instanceIndex, inst
+    for instanceIndex = 1, table.getn(self.instanceQuestById[id]) do
+      inst = self:FindInstanceByListKey(self.instanceQuestById[id][instanceIndex])
+      if inst then
+        self:AddDetailLine(" - " .. inst.name .. " [" .. (inst.isRaid and "Raid" or "Dungeon") .. "]", 1, 1, 1)
+      end
+    end
+  end
+
   self:AddDetailLine(" ")
   self:AddDetailLine("Objective:", 1, 0.82, 0.2)
   self:AddDetailLine(locale.O or "No objective text in pfQuest DB.", 0.9, 0.9, 0.9)
@@ -4819,6 +4991,36 @@ function pfQuestLedger:RenderChainOrAttunementDetails(object, isAttunementTab)
     self:AddDetailLine("Right click toggles manual-only steps.", 0.8, 0.8, 0.8)
   end
   self:PopulateDetailLinks(object, isAttunementTab)
+end
+
+function pfQuestLedger:RenderInstanceDetails(inst)
+  self:ClearDetails()
+  if self.frame and self.frame.details then
+    self.frame.details:SetHeight(110)
+  end
+  if self.frame and self.frame.guideButton then
+    self.frame.guideButton:Hide()
+  end
+  self:UpdateDetailsGuideLayout(false)
+  if not inst then
+    self:AddDetailLine("Select an instance to inspect its quests.", 0.8, 0.8, 0.8)
+    return
+  end
+
+  local owner = self:GetInstanceStepOwner(inst)
+  local done, total, summary = self:GetAttunementProgress(owner)
+  local typeLabel = inst.isRaid and "Raid" or "Dungeon"
+  local levelLabel = inst.levelText or tostring(inst.level or "")
+
+  self:AddDetailLine(inst.name or "Instance", 0.3, 1.0, 0.8)
+  self:AddDetailLine(typeLabel .. " / " .. levelLabel, 1, 1, 1)
+  self:AddDetailLine("Progress: " .. self:BuildProgressBar(done, total, 20) .. " " .. done .. "/" .. total .. " - " .. summary, 1, 1, 1)
+  self:AddDetailLine(" ")
+  self:AddDetailLine("Quests visible to the current character are listed below.", 0.85, 0.85, 0.85)
+  self:AddDetailLine(" ")
+  self:AddDetailLine("Quests below are clickable.", 1, 0.82, 0.2)
+  self:AddDetailLine("Left click opens the quest in the Quests tab.", 0.8, 0.8, 0.8)
+  self:PopulateDetailLinks(owner, false)
 end
 
 function pfQuestLedger:GetGuildClassIconCoords(classToken)
@@ -5196,6 +5398,8 @@ function pfQuestLedger:RefreshDetails()
     self:RenderQuestDetails(self.selection[tab])
   elseif tab == "CHAINS" then
     self:RenderChainOrAttunementDetails(self:FindChainByListKey(self.selection[tab]), false)
+  elseif tab == "INSTANCES" then
+    self:RenderInstanceDetails(self:FindInstanceByListKey(self.selection[tab]))
   elseif tab == "ATTUNEMENTS" then
     self:RefreshAttunementPanel()
   elseif tab == "GUILD" then
@@ -5217,6 +5421,11 @@ function pfQuestLedger:GetListLabel(tab, object)
       totalTotal = totalTotal + (state.total or 0)
     end
     return object.name .. " |cffaaaaaa- " .. (object.data.class or "?") .. " " .. (object.data.level or 0) .. " - " .. totalDone .. "/" .. totalTotal .. "|r"
+  elseif tab == "INSTANCES" then
+    local done, total, summary = self:GetInstanceProgress(object)
+    local levelText = object.levelText or tostring(object.level or "")
+    local typeText = object.isRaid and "Raid" or "Dungeon"
+    return "|cffaaaaaa[" .. levelText .. "]|r " .. object.name .. " |cffaaaaaa- " .. typeText .. " - " .. done .. "/" .. total .. " " .. summary .. "|r"
   elseif tab == "CHAINS" then
     local status = self:GetChainStatus(object)
     local statusColor = self:GetStatusColor(status)
@@ -5280,6 +5489,8 @@ function pfQuestLedger:RefreshList()
     source = self:GetVisibleQuestList()
   elseif tab == "CHAINS" then
     source = self:GetVisibleChainList()
+  elseif tab == "INSTANCES" then
+    source = self:GetVisibleInstanceList()
   elseif tab == "ATTUNEMENTS" then
     source = self:GetVisibleAttunementList()
   else
@@ -5314,6 +5525,8 @@ function pfQuestLedger:RefreshList()
     self.frame.statusLine:SetText("Search: '" .. (self:GetSearchText("QUESTS") or "") .. "' | Status " .. self:GetFilterSelectedCount("status") .. "/" .. table.getn(self.statusOptions) .. " | Tags " .. self:GetFilterSelectedCount("category") .. "/" .. table.getn(self.categoryOptions) .. " | Level " .. self:GetFilterSelectedCount("level") .. "/" .. table.getn(self.levelOptions))
   elseif tab == "CHAINS" then
     self.frame.statusLine:SetText("Search: '" .. (self:GetSearchText("CHAINS") or "") .. "' | Chain status " .. self:GetFilterSelectedCount("chainStatus") .. "/" .. table.getn(self.chainStatusOptions))
+  elseif tab == "INSTANCES" then
+    self.frame.statusLine:SetText("Search: '" .. (self:GetSearchText("INSTANCES") or "") .. "'")
   else
     self.frame.statusLine:SetText("Search: '" .. (self:GetSearchText(tab) or "") .. "'")
   end
@@ -5348,6 +5561,8 @@ function pfQuestLedger:LayoutActionButtons(tab)
     place(self.frame.syncButton, anchor)
   elseif tab == "CHAINS" then
     anchor = place(self.frame.chainStatusButton, anchor)
+    place(self.frame.syncButton, anchor)
+  elseif tab == "INSTANCES" then
     place(self.frame.syncButton, anchor)
   elseif tab == "ATTUNEMENTS" then
     place(self.frame.syncButton, anchor)
@@ -5456,6 +5671,8 @@ function pfQuestLedger:GetSelectedStepOwner()
     return self:FindAttunementByListKey(self.selection.ATTUNEMENTS)
   elseif tab == "CHAINS" then
     return self:FindChainByListKey(self.selection.CHAINS)
+  elseif tab == "INSTANCES" then
+    return self:GetInstanceStepOwner(self:FindInstanceByListKey(self.selection.INSTANCES))
   end
   return nil
 end
@@ -5477,7 +5694,7 @@ end
 function pfQuestLedger:OpenSelectedStepQuest()
   local owner = self:GetSelectedStepOwner()
   if not owner then
-    self:Print("Select a chain or attunement first.")
+    self:Print("Select a chain, instance, or attunement first.")
     return
   end
 
@@ -5675,6 +5892,7 @@ function pfQuestLedger:InitializeRuntime()
   self:BuildQuestCaches()
   self:BuildQuestGraph()
   self:BuildChains()
+  self:BuildInstanceCaches()
   self:ResolveAttunementSteps()
   self:EnsureLauncherButton()
   self.initialized = true
@@ -5686,6 +5904,7 @@ function pfQuestLedger:RefreshRuntimeCaches()
   self:BuildQuestCaches()
   self:BuildQuestGraph()
   self:BuildChains()
+  self:BuildInstanceCaches()
   self:ResolveAttunementSteps()
 end
 
